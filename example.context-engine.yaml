@@ -1,0 +1,37 @@
+# Example project configuration for ContextEngine
+# Copy this to your project root and customize
+
+commands:
+  # Build/check command for your language
+  check: "cargo check"      # Rust
+  # check: "npm run lint"   # Node.js
+  # check: "pytest"         # Python
+  # check: "go build ./..." # Go
+
+  # Test command
+  test: "cargo test"
+  # test: "npm test"
+  # test: "pytest -v"
+  # test: "go test ./..."
+
+  # Build command (optional)
+  build: "cargo build"
+  
+  # Run command (optional)
+  run: "cargo run"
+
+docs:
+  # Path to your architectural rules/constraints
+  rules: "AGENT.md"
+  
+  # Path to your task list (uses [ ]/[/]/[x] markers)
+  tasks: "WORK_PLAN.md"
+  
+  # Path to your work log (log_progress appends here)
+  log: "WORK_LOG.md"
+  
+  # Path to your codebase index/map
+  index: "INDEX.md"
+  
+  # Path to your project readme
+  readme: "README.md"
