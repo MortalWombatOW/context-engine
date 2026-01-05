@@ -1,8 +1,8 @@
 ---
-description: Officially mark work as complete and persist it. Run after /audit. Run before /next-task or /refine.
+description: Officially mark work as complete and persist it. Run after /review. Run before /execute-task or /refine.
 ---
 
-# Workflow: Accept
+# Workflow: Finish
 
 **Goal**: Officially mark work as complete and persist it.
 
@@ -13,7 +13,7 @@ description: Officially mark work as complete and persist it. Run after /audit. 
     * If this task has a test requirement:
         1. Run: `{{ commands.test }}`
         2. If tests pass, verification passes
-        3. If verification fails, **ABORT** and return to `/forge` to fix
+        3. If verification fails, **ABORT** and return to `/execute-task` to fix
 
 2.  **Documentation**
     * Update task status in `{{ docs.tasks }}` to `[x]`.
@@ -26,4 +26,4 @@ description: Officially mark work as complete and persist it. Run after /audit. 
 
 4.  **Handoff**
     * Notify the user: "Task Complete."
-    * Remind the user to run `/next-task` to continue, or `/refine` if the session is ending.
+    * Remind the user to run `/execute-task` to continue, or `/refine` if the session is ending.

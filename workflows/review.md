@@ -1,8 +1,8 @@
 ---
-description: Comprehensive code review to ensure technical quality and product alignment. Run after /forge.
+description: Comprehensive code review to ensure technical quality and product alignment. Run after /execute-task.
 ---
 
-# Workflow: Audit
+# Workflow: Review
 
 **Goal**: Comprehensive code review to ensure technical quality and product alignment.
 
@@ -13,10 +13,10 @@ description: Comprehensive code review to ensure technical quality and product a
     * Have changes been reflected in `{{ docs.log }}`?
 
 2.  **Code Quality & Norms**
+    * **Potential Bugs**: Verify there are no logical errors in the implementation.
     * **Rule Compliance**: Verify compliance with `{{ docs.rules }}`.
     * **Warning Audit**: Run `{{ commands.check }}`. If any warnings exist:
         * Verify each warning was addressed via root cause analysis, not suppression.
-        * Check for `#[allow(...)]` or `# noqa` attributes—these are red flags unless explicitly justified.
     * **No-Fallback Audit**: If this task involved replacing functionality:
         * Verify the old implementation is deleted or clearly marked for removal.
         * Verify the new implementation is what's being used, not a silent revert.
@@ -31,5 +31,5 @@ description: Comprehensive code review to ensure technical quality and product a
     * If yes, add a note to `{{ docs.rules }}`.
 
 5.  **Handoff**
-    * If **Failed**: Remind the user to run `/forge` to fix issues.
-    * If **Passed**: Remind the user to run `/accept`.
+    * If **Failed**: Remind the user to run `/execute-task` to fix issues.
+    * If **Passed**: Remind the user to run `/finish`.

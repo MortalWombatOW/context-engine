@@ -96,22 +96,22 @@ class TestTemplates:
         """Test listing available workflows."""
         workflows = list_workflows()
         
-        assert "init" in workflows
-        assert "forge" in workflows
-        assert "audit" in workflows
-        assert "accept" in workflows
-        assert len(workflows) == 8
+        assert "start" in workflows
+        assert "execute-task" in workflows
+        assert "review" in workflows
+        assert "finish" in workflows
+        assert len(workflows) == 7
     
-    def test_render_init(self):
-        """Test rendering the init workflow."""
-        content = render_workflow("init")
+    def test_render_start(self):
+        """Test rendering the start workflow."""
+        content = render_workflow("start")
         
         assert "RULES.md" in content  # Template variable substituted
         assert "INDEX.md" in content
         assert "TASKS.md" in content
 
-    def test_render_init_with_content(self, tmp_path: Path):
-        """Test that init workflow inlines file content."""
+    def test_render_start_with_content(self, tmp_path: Path):
+        """Test that start workflow inlines file content."""
         # Create dummy doc files
         (tmp_path / "RULES.md").write_text("Rule: Be nice")
         (tmp_path / "INDEX.md").write_text("Map: You are here")
@@ -122,25 +122,25 @@ class TestTemplates:
         # The fixture sets config pointing to these filenames in tmp_path.
         # So we just need to ensure the files exist there.
         
-        content = render_workflow("init")
+        content = render_workflow("start")
         
         assert "Rule: Be nice" in content
         assert "Map: You are here" in content
         assert "Intro: Hello" in content
         assert "- [ ] Task 1" in content
     
-    def test_render_forge(self):
-        """Test rendering the forge workflow."""
-        content = render_workflow("forge")
+    def test_render_execute_task(self):
+        """Test rendering the execute-task workflow."""
+        content = render_workflow("execute-task")
         
         assert "make check" in content  # Command substituted
         assert "make test" in content
         assert "TASKS.md" in content
         assert "log_progress" in content  # Checkpoint instruction
     
-    def test_render_accept(self):
-        """Test rendering the accept workflow."""
-        content = render_workflow("accept")
+    def test_render_finish(self):
+        """Test rendering the finish workflow."""
+        content = render_workflow("finish")
         
         assert "make check" in content
         assert "log_progress" in content
@@ -158,3 +158,53 @@ class TestServer:
         """Test that the MCP server is configured."""
         from context_engine.server import mcp
         assert mcp.name == "ContextEngine"
+    
+    def test_delegate_tool(self, monkeypatch):
+        """Test the delegate tool."""
+        import subprocess
+        from context_engine.server import _delegate_impl
+        
+        # Mock subprocess.run
+        class MockResult:
+            returncode = 0
+            stdout = "I am a subagent"
+            stderr = ""
+            
+        params = {}
+        
+        def mock_run(cmd, **kwargs):
+            params["cmd"] = cmd
+            params["timeout"] = kwargs.get("timeout")
+            return MockResult()
+            
+        monkeypatch.setattr(subprocess, "run", mock_run)
+        
+        # Test with defaults
+        result = _delegate_impl(prompt="hello")
+        assert result == "I am a subagent"
+        assert params["cmd"] == ["gemini", "-m", "gemini-2.0-flash", "hello"]
+        assert params["timeout"] == 300
+        
+        # Test overrides
+        result = _delegate_impl(prompt="hi", model="foo", timeout=10)
+        assert params["cmd"] == ["gemini", "-m", "foo", "hi"]
+        assert params["timeout"] == 10
+
+    def test_delegate_tool_failure(self, monkeypatch):
+        """Test delegate tool error handling."""
+        import subprocess
+        from context_engine.server import _delegate_impl
+        
+        class MockResult:
+            returncode = 1
+            stdout = ""
+            stderr = "Error message"
+            
+        def mock_run(*args, **kwargs):
+            return MockResult()
+            
+        monkeypatch.setattr(subprocess, "run", mock_run)
+        
+        result = _delegate_impl(prompt="fail")
+        assert "Error message" in result
+        assert "exit code 1" in result

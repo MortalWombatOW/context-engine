@@ -32,7 +32,20 @@ class ContextEngineConfig:
         "index": "INDEX.md",
         "readme": "README.md",
     })
+    docs: dict[str, str] = field(default_factory=lambda: {
+        "rules": "AGENT.md",
+        "tasks": "WORK_PLAN.md",
+        "log": "WORK_LOG.md",
+        "index": "INDEX.md",
+        "readme": "README.md",
+    })
     """Paths to documentation files (relative to project root)."""
+
+    delegation: dict[str, str | int] = field(default_factory=lambda: {
+        "default_model": "gemini-3-pro-preview",
+        "timeout": 300,
+    })
+    """Configuration for Gemini subagent delegation."""
     
     def get_doc_path(self, doc_name: str) -> Path:
         """Get absolute path to a documentation file."""
@@ -73,11 +86,13 @@ def load_config(project_path: str | Path) -> ContextEngineConfig:
     
     commands = {**default_config.commands, **config_data.get("commands", {})}
     docs = {**default_config.docs, **config_data.get("docs", {})}
+    delegation = {**default_config.delegation, **config_data.get("delegation", {})}
     
     return ContextEngineConfig(
         project_path=project_path,
         commands=commands,
         docs=docs,
+        delegation=delegation,
     )
 
 

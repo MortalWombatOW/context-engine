@@ -1,12 +1,24 @@
 ---
-description: Implement a single atomic task with high quality. Run after /architect or /next-task. Run before /audit.
+description: Select the next task and implement it with high quality. Run after /start or /finish. Run before /review.
 ---
 
-# Workflow: Forge
+# Workflow: Execute Task
 
-**Goal**: Implement a single atomic task with high quality.
+**Goal**: Select the next available task and implement it with high quality.
 
 ## Protocol Steps
+
+### Phase 1: Task Selection
+
+1.  **Task Selection**
+    * Identify the next available task in `{{ docs.tasks }}`.
+    * Criteria: Marked `[ ]`, dependencies are `[x]`.
+    * **Constraint**: Strict numerical order within Epics. Do not skip.
+
+2.  **State Transition**
+    * Mark the selected task as in-progress `[/]` in `{{ docs.tasks }}`.
+
+### Phase 2: Implementation
 
 1.  **Strategy Formulation & Design**
     * **Scope Safety**: Check `{{ docs.tasks }}`. If the requirement is missing, **ABORT** and trigger `/architect`. Do not invent tasks.
@@ -26,7 +38,7 @@ description: Implement a single atomic task with high quality. Run after /archit
         * For dead code: Determine if caller is missing (fix it) or code is obsolete (delete it).
         * **NEVER** suppress warnings without understanding the root cause.
     * Verify the implementation meets the criteria in `{{ docs.tasks }}`.
-    * **Requirement**: Zero warnings before proceeding to `/audit`.
+    * **Requirement**: Zero warnings before proceeding to `/review`.
     * **⚠️ CHECKPOINT**: Call `log_progress(task_id, "verified", "Verification passed: <details>")`
 
 4.  **Test Creation** (if task has verification requirement)
@@ -53,4 +65,4 @@ description: Implement a single atomic task with high quality. Run after /archit
     *   Resume the original task.
 
 5.  **Handoff**
-    * Remind the user to run `/audit` to review the code.
+    * Remind the user to run `/review` to review the code.

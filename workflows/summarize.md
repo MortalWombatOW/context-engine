@@ -2,7 +2,7 @@
 description: Prepare a high-quality context handoff for the next AI agent. Run at the end of a session or when hitting a complex blocker.
 ---
 
-# Workflow: Collaborate (Handoff)
+# Workflow: Summarize (Handoff)
 
 **Goal**: Enable seamless context transfer between AI sessions by packaging the current mental state into a clear directive for the next agent.
 
@@ -21,7 +21,7 @@ description: Prepare a high-quality context handoff for the next AI agent. Run a
     *   Create a specialized comment block or a temporary file containing:
         *   **Current Goal**: What is the immediate objective?
         *   **Status**: What is working? What is broken?
-        *   **Next Command**: What specific workflow should the next agent run? (e.g., "Run `/forge` on task 5.2.1").
+        *   **Next Command**: What specific workflow should the next agent run? (e.g., "Run `/execute-task` on task 5.2.1").
         *   **Pitfalls**: What should they avoid?
 
 4.  **Communication**

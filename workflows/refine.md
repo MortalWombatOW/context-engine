@@ -1,5 +1,5 @@
 ---
-description: Maintain documentation accuracy and improve agent performance through reflection. Run after /accept or when process friction is identified.
+description: Maintain documentation accuracy and improve agent performance through reflection. Run after /finish or when process friction is identified.
 ---
 
 # Workflow: Refine

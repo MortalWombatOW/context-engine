@@ -25,124 +25,203 @@ mcp = FastMCP(
 # =============================================================================
 
 @mcp.tool()
-def workflow_init() -> ToolResult:
+def start() -> ToolResult:
     """Load the complete mental model of the project.
     
     Run at the start of a session before beginning work.
     Reads project rules, index, readme, and task list.
     """
-    return ToolResult(content=render_workflow("init"))
+    content = render_workflow("start")
+    return ToolResult(content=content)
 
 
 @mcp.tool()
-def workflow_architect(requirement: str | None = None) -> str:
-    """Convert requirements into atomic tasks.
+def plan(
+    requirement: str | None = None,
+    delegate: bool = False
+) -> ToolResult:
+    """Research context and convert requirements into atomic tasks.
     
     Run when planning new work. Analyzes the request against project rules
     and creates a micro-plan of tasks.
     
     Args:
-        requirement: Optional description of the feature/change to architect.
+        requirement: Optional description of the feature/change to plan.
+        delegate: If True, execute the prompt with a subagent.
     """
-    content = render_workflow("architect")
+    content = render_workflow("plan")
     if requirement:
         content = f"# Requirement\n\n{requirement}\n\n---\n\n{content}"
-    return content
+    
+    if delegate:
+        return _delegate_impl(content, high_complexity=True)
+    return ToolResult(content=content)
 
 
 @mcp.tool()
-def workflow_next_task() -> str:
-    """Identify and lock the next unit of work.
+def execute_task(
+    task_id: str | None = None,
+    delegate: bool = False,
+    high_complexity: bool = False
+) -> ToolResult:
+    """Select the next task and implement it with high quality.
     
-    Run after init or accept to find what to work on next.
-    Selects the next available task and marks it in-progress.
-    """
-    return render_workflow("next-task")
-
-
-@mcp.tool()
-def workflow_forge(task_id: str | None = None) -> str:
-    """Implement a single atomic task with high quality.
-    
-    Run after next_task to begin implementation.
+    Run after start or finish to find what to work on next.
+    Selects the next available task, marks it in-progress, and implements it.
     Includes checkpoints for documentation via log_progress.
     
     Args:
-        task_id: Optional specific task ID to implement.
+        task_id: Optional specific task ID to implement (skips selection).
+        delegate: If True, execute the prompt with a subagent.
+        high_complexity: If True, use reasoning-capable model (gemini-3-pro-preview).
     """
-    content = render_workflow("forge")
+    content = render_workflow("execute-task")
     if task_id:
         content = f"# Active Task: {task_id}\n\n---\n\n{content}"
-    return content
+    
+    if delegate:
+        return _delegate_impl(content, high_complexity=high_complexity)
+    return ToolResult(content=content)
 
 
 @mcp.tool()
-def workflow_audit() -> str:
+def review() -> ToolResult:
     """Comprehensive code review to ensure quality.
     
-    Run after forge to review implemented changes.
+    Run after execute_task to review implemented changes.
     Checks code quality, architectural alignment, and documentation.
     """
-    return render_workflow("audit")
+    return _delegate_impl(render_workflow("review"), high_complexity=False)
+
 
 
 @mcp.tool()
-def workflow_accept() -> str:
+def finish() -> ToolResult:
     """Mark work complete and persist changes.
     
-    Run after audit passes to finalize the task.
+    Run after review passes to finalize the task.
     Updates task status, logs completion, and commits changes.
     """
-    return render_workflow("accept")
+    return ToolResult(content=render_workflow("finish"))
 
 
 @mcp.tool()
-def workflow_collaborate() -> str:
+def summarize() -> ToolResult:
     """Prepare handoff for next agent session.
     
     Run when ending a session or hitting a complex blocker.
     Creates a handoff note with current state and next steps.
     """
-    return render_workflow("collaborate")
+    return ToolResult(content=render_workflow("summarize"))
 
 
 @mcp.tool()
-def workflow_refine() -> str:
+def refine() -> ToolResult:
     """Maintain documentation and improve process.
     
     Run periodically to sync documentation with code changes
     and identify process improvements.
     """
-    return render_workflow("refine")
-
+    return ToolResult(content=render_workflow("refine"))
 
 @mcp.tool()
-def list_available_workflows() -> str:
-    """List all available workflow tools.
+def delegate(
+    prompt: str,
+    context_files: list[str] | None = None,
+    high_complexity: bool = False,
+    timeout: int | None = None,
+) -> ToolResult:
+    """Delegate a task to a Gemini subagent.
     
-    Returns descriptions of each workflow and when to use them.
+    Spawns a new Gemini CLI instance to handle a specific task,
+    reducing token usage by the main agent.
+    
+    Args:
+        prompt: The task description for the subagent.
+        context_files: List of file paths (relative to project root) to read and pass to the subagent.
+        high_complexity: If True, use reasoning-capable model (gemini-3-pro-preview).
+                         Otherwise, use fast model (gemini-3-flash-preview).
+        timeout: Maximum seconds to wait (default: configured timeout).
+    
+    Returns:
+        The subagent's response.
     """
-    workflows = {
-        "workflow_init": "Load project context (start of session)",
-        "workflow_architect": "Convert requirements to tasks (planning)",
-        "workflow_next_task": "Find next task to work on",
-        "workflow_forge": "Implement a task (active development)",
-        "workflow_audit": "Code review (after implementation)",
-        "workflow_accept": "Mark complete and commit (after audit)",
-        "workflow_collaborate": "Prepare session handoff",
-        "workflow_refine": "Improve docs and process",
-    }
+    return _delegate_impl(prompt, context_files, high_complexity, timeout)
+
+
+def _delegate_impl(
+    prompt: str,
+    context_files: list[str] | None = None,
+    high_complexity: bool = False,
+    timeout: int | None = None
+) -> ToolResult:
+    """Implementation of delegate tool."""
+    import subprocess
     
-    lines = ["# Available Workflows\n"]
-    for name, desc in workflows.items():
-        lines.append(f"- **{name}**: {desc}")
+    config = get_config()
     
-    lines.append("\n## Typical Flow")
-    lines.append("```")
-    lines.append("workflow_init → workflow_next_task → workflow_forge → workflow_audit → workflow_accept")
-    lines.append("```")
+    # Select model based on complexity flag
+    target_model = "gemini-3-pro-preview" if high_complexity else "gemini-3-flash-preview"
+    # Cast safely - config values might be parsed as strings from YAML
+    timeout_val = int(timeout or config.delegation["timeout"])
     
-    return "\n".join(lines)
+    # Construct the full prompt with context files
+    preamble = (
+        "SYSTEM NOTE: You are a subagent working on a specific task. "
+        "You have only ONE turn to complete this task. "
+        "You are stateless; no memory is retained after this turn. "
+        "You must tie up all loose ends within this single response. "
+        "If the task is too large to complete in a single turn, you must explicitly state this."
+    )
+    
+    full_prompt = f"{preamble}\n\n{prompt}"
+    if context_files:
+        context_content = []
+        for file_path in context_files:
+            try:
+                # Resolve path relative to project root
+                abs_path = (config.project_path / file_path).resolve()
+                
+                # Security check: ensure path is within project
+                if not str(abs_path).startswith(str(config.project_path.resolve())):
+                    context_content.append(f"⚠️ Context file skipped (outside project): {file_path}")
+                    continue
+                    
+                if abs_path.exists():
+                    file_text = abs_path.read_text()
+                    context_content.append(f"# Context File: {file_path}\n{file_text}\n")
+                else:
+                    context_content.append(f"⚠️ Context file not found: {file_path}")
+            except Exception as e:
+                context_content.append(f"⚠️ Error reading {file_path}: {e}")
+        
+        if context_content:
+            full_prompt = f"{preamble}\n\n" + "\n".join(context_content) + "\n\n---\n\n" + prompt
+
+    try:
+        # Construct the command
+        # gemini -m "model" "prompt"
+        # We use the positional prompt argument which is the preferred way
+        cmd = ["gemini", "-m", str(target_model), full_prompt]
+        
+        # Run execution in the project directory
+        result = subprocess.run(
+            cmd,
+            cwd=config.project_path,
+            capture_output=True,
+            text=True,
+            timeout=timeout_val,
+        )
+        
+        if result.returncode != 0:
+            return ToolResult(content=f"⚠️ Subagent failed (exit code {result.returncode}):\n{result.stderr}")
+            
+        return ToolResult(content=result.stdout.strip())
+        
+    except subprocess.TimeoutExpired:
+        return ToolResult(content=f"⚠️ Subagent timed out after {timeout_val} seconds")
+    except Exception as e:
+        return ToolResult(content=f"⚠️ Failed to delegate task: {str(e)}")
 
 
 # =============================================================================
@@ -154,7 +233,7 @@ def log_progress(
     task_id: str,
     status: Literal["started", "implementing", "verified", "blocked", "complete"],
     summary: str,
-) -> str:
+) -> ToolResult:
     """Log progress checkpoint during task execution.
     
     Workflows instruct you to call this at specific checkpoints to ensure
@@ -198,10 +277,10 @@ def log_progress(
         if status in ("started", "complete", "blocked"):
             _update_task_status(config, task_id, status)
         
-        return f"✓ Progress logged: {task_id} - {status}"
+        return ToolResult(content=f"✓ Progress logged: {task_id} - {status}")
         
     except Exception as e:
-        return f"⚠️ Failed to log progress: {e}"
+        return ToolResult(content=f"⚠️ Failed to log progress: {e}")
 
 
 def _update_task_status(config: ContextEngineConfig, task_id: str, status: str) -> None:
