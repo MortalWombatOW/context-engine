@@ -2,12 +2,12 @@
 
 import tempfile
 from pathlib import Path
+import re
 
 import pytest
+from fastmcp.tools.tool import ToolResult
 
 from context_engine.config import ContextEngineConfig, load_config, set_config, get_config
-from context_engine.templates import render_workflow, list_workflows
-
 
 # =============================================================================
 # Config Tests
@@ -65,11 +65,11 @@ docs:
 
 
 # =============================================================================
-# Template Tests
+# Server Tests
 # =============================================================================
 
-class TestTemplates:
-    """Tests for template rendering."""
+class TestServer:
+    """Tests for MCP server components."""
     
     @pytest.fixture(autouse=True)
     def setup_config(self, tmp_path: Path):
@@ -77,134 +77,122 @@ class TestTemplates:
         config = ContextEngineConfig(
             project_path=tmp_path,
             commands={
-                "check": "make check",
-                "test": "make test",
-                "build": "make build",
-                "run": "make run",
+                "check": "echo check",
+                "test": "echo verify",
             },
             docs={
                 "rules": "RULES.md",
                 "tasks": "TASKS.md",
                 "log": "LOG.md",
-                "index": "INDEX.md",
                 "readme": "README.md",
             },
         )
         set_config(config)
-    
-    def test_list_workflows(self):
-        """Test listing available workflows."""
-        workflows = list_workflows()
-        
-        assert "start" in workflows
-        assert "execute-task" in workflows
-        assert "review" in workflows
-        assert "finish" in workflows
-        assert len(workflows) == 7
-    
-    def test_render_start(self):
-        """Test rendering the start workflow."""
-        content = render_workflow("start")
-        
-        assert "RULES.md" in content  # Template variable substituted
-        assert "INDEX.md" in content
-        assert "TASKS.md" in content
-
-    def test_render_start_with_content(self, tmp_path: Path):
-        """Test that start workflow inlines file content."""
-        # Create dummy doc files
+        # Create dummy files
         (tmp_path / "RULES.md").write_text("Rule: Be nice")
-        (tmp_path / "INDEX.md").write_text("Map: You are here")
-        (tmp_path / "README.md").write_text("Intro: Hello")
         (tmp_path / "TASKS.md").write_text("- [ ] Task 1")
-        
-        # We need to reload the config to point to these new files?
-        # The fixture sets config pointing to these filenames in tmp_path.
-        # So we just need to ensure the files exist there.
-        
-        content = render_workflow("start")
-        
-        assert "Rule: Be nice" in content
-        assert "Map: You are here" in content
-        assert "Intro: Hello" in content
-        assert "- [ ] Task 1" in content
-    
-    def test_render_execute_task(self):
-        """Test rendering the execute-task workflow."""
-        content = render_workflow("execute-task")
-        
-        assert "make check" in content  # Command substituted
-        assert "make test" in content
-        assert "TASKS.md" in content
-        assert "log_progress" in content  # Checkpoint instruction
-    
-    def test_render_finish(self):
-        """Test rendering the finish workflow."""
-        content = render_workflow("finish")
-        
-        assert "make check" in content
-        assert "log_progress" in content
-        assert "complete" in content
+        (tmp_path / "README.md").write_text("# Readme")
+        (tmp_path / "LOG.md").write_text("# Log")
 
-
-# =============================================================================
-# Server Tests
-# =============================================================================
-
-class TestServer:
-    """Tests for MCP server components."""
-    
     def test_server_exists(self):
         """Test that the MCP server is configured."""
         from context_engine.server import mcp
         assert mcp.name == "ContextEngine"
     
-    def test_delegate_tool(self, monkeypatch):
-        """Test the delegate tool."""
-        import subprocess
-        from context_engine.server import _delegate_impl
+    def test_fetch_context(self):
+        """Test fetch_context tool."""
+        from context_engine.server import _fetch_context
         
-        # Mock subprocess.run
+        result = _fetch_context()
+        content = str(result.content) if not hasattr(result, 'content') else str(result.content)
+        
+        assert "Rule: Be nice" in content
+        assert "Task 1" in content
+        assert "# Readme" in content
+        assert "# Tool Guide" in content
+        assert "attempt_completion" in content
+        
+    def test_draft_implementation_plan(self):
+        """Test draft_implementation_plan tool."""
+        from context_engine.server import _draft_implementation_plan
+        
+        result = _draft_implementation_plan(requirement="Fix bug")
+        content = str(result.content)
+        
+        assert "# Implementation Plan - Fix bug" in content
+        assert "## User Story" in content
+        assert "Fix bug" in content
+
+    def test_consult_logs_mock(self, monkeypatch):
+        """Test consult_logs tool with mocked subprocess."""
+        import subprocess
+        from context_engine.server import _consult_logs
+        
         class MockResult:
             returncode = 0
-            stdout = "I am a subagent"
+            stdout = "Log analysis result"
             stderr = ""
             
-        params = {}
-        
         def mock_run(cmd, **kwargs):
-            params["cmd"] = cmd
-            params["timeout"] = kwargs.get("timeout")
+            # Check command structure
+            assert cmd[0] == "gemini"
+            assert cmd[2] == "gemini-3-flash-preview"
             return MockResult()
             
         monkeypatch.setattr(subprocess, "run", mock_run)
         
-        # Test with defaults
-        result = _delegate_impl(prompt="hello")
-        assert result == "I am a subagent"
-        assert params["cmd"] == ["gemini", "-m", "gemini-2.0-flash", "hello"]
-        assert params["timeout"] == 300
-        
-        # Test overrides
-        result = _delegate_impl(prompt="hi", model="foo", timeout=10)
-        assert params["cmd"] == ["gemini", "-m", "foo", "hi"]
-        assert params["timeout"] == 10
+        result = _consult_logs(query="what happened?")
+        assert result.content[0].text == "Log analysis result"
 
-    def test_delegate_tool_failure(self, monkeypatch):
-        """Test delegate tool error handling."""
+    def test_delegate_implementation_mock(self, monkeypatch, tmp_path):
+        """Test delegate_implementation tool with mocked subprocess."""
         import subprocess
-        from context_engine.server import _delegate_impl
+        from context_engine.server import _delegate_implementation
+        
+        # Create a context file
+        ctx_file = tmp_path / "ctx.py"
+        ctx_file.write_text("print('hello')")
         
         class MockResult:
-            returncode = 1
-            stdout = ""
-            stderr = "Error message"
+            returncode = 0
+            stdout = "Modified code"
+            stderr = ""
             
-        def mock_run(*args, **kwargs):
+        def mock_run(cmd, **kwargs):
+            assert cmd[0] == "gemini"
+            assert cmd[2] == "gemini-3-pro-preview"
+            # Check that context file content is in the prompt
+            assert "print('hello')" in cmd[3]
             return MockResult()
             
         monkeypatch.setattr(subprocess, "run", mock_run)
         
-        result = _delegate_impl(prompt="fail")
-        assert "Error message" in result
-        assert "exit code 1" in result
+        result = _delegate_implementation(instructions="improve it", context_files=["ctx.py"])
+        assert result.content[0].text == "Modified code"
+
+    def test_update_docs_mock(self, monkeypatch, tmp_path):
+        """Test update_docs tool."""
+        import subprocess
+        from context_engine.server import _update_docs
+        
+        # Setup doc file
+        readme = tmp_path / "README.md"
+        # Initial content
+        readme.write_text("# Old Readme")
+        
+        # Mock subprocess
+        class MockResult:
+            returncode = 0
+            stdout = "# New Readme"
+            stderr = ""
+            
+        def mock_run(cmd, **kwargs):
+            return MockResult()
+            
+        monkeypatch.setattr(subprocess, "run", mock_run)
+        
+        result = _update_docs()
+        
+        assert "README.md" in result.content[0].text
+        assert readme.read_text() == "# New Readme"
+

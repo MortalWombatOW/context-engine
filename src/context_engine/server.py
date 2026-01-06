@@ -1,17 +1,16 @@
 """MCP Server for ContextEngine workflows."""
 
-from fastmcp.tools.tool import ToolResult
 import argparse
-import re
+import subprocess
 import sys
+import re
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
 
 from fastmcp import FastMCP
+from fastmcp.tools.tool import ToolResult
 
 from .config import ContextEngineConfig, load_config, set_config, get_config
-from .templates import render_workflow, list_workflows
 
 # Create the FastMCP server instance
 mcp = FastMCP(
@@ -19,305 +18,383 @@ mcp = FastMCP(
     instructions="An MCP server for workflows that promote human-engaged agentic coding",
 )
 
-
 # =============================================================================
-# Workflow Tools - Rendered templates accessible as tools
+# Helper Functions
 # =============================================================================
 
-@mcp.tool()
-def start() -> ToolResult:
-    """Load the complete mental model of the project.
-    
-    Run at the start of a session before beginning work.
-    Reads project rules, index, readme, and task list.
-    """
-    content = render_workflow("start")
-    return ToolResult(content=content)
-
-
-@mcp.tool()
-def plan(
-    requirement: str | None = None,
-    delegate: bool = False
-) -> ToolResult:
-    """Research context and convert requirements into atomic tasks.
-    
-    Run when planning new work. Analyzes the request against project rules
-    and creates a micro-plan of tasks.
-    
-    Args:
-        requirement: Optional description of the feature/change to plan.
-        delegate: If True, execute the prompt with a subagent.
-    """
-    content = render_workflow("plan")
-    if requirement:
-        content = f"# Requirement\n\n{requirement}\n\n---\n\n{content}"
-    
-    if delegate:
-        return _delegate_impl(content, high_complexity=True)
-    return ToolResult(content=content)
-
-
-@mcp.tool()
-def execute_task(
-    task_id: str | None = None,
-    delegate: bool = False,
-    high_complexity: bool = False
-) -> ToolResult:
-    """Select the next task and implement it with high quality.
-    
-    Run after start or finish to find what to work on next.
-    Selects the next available task, marks it in-progress, and implements it.
-    Includes checkpoints for documentation via log_progress.
-    
-    Args:
-        task_id: Optional specific task ID to implement (skips selection).
-        delegate: If True, execute the prompt with a subagent.
-        high_complexity: If True, use reasoning-capable model (gemini-3-pro-preview).
-    """
-    content = render_workflow("execute-task")
-    if task_id:
-        content = f"# Active Task: {task_id}\n\n---\n\n{content}"
-    
-    if delegate:
-        return _delegate_impl(content, high_complexity=high_complexity)
-    return ToolResult(content=content)
-
-
-@mcp.tool()
-def review() -> ToolResult:
-    """Comprehensive code review to ensure quality.
-    
-    Run after execute_task to review implemented changes.
-    Checks code quality, architectural alignment, and documentation.
-    """
-    return _delegate_impl(render_workflow("review"), high_complexity=False)
-
-
-
-@mcp.tool()
-def finish() -> ToolResult:
-    """Mark work complete and persist changes.
-    
-    Run after review passes to finalize the task.
-    Updates task status, logs completion, and commits changes.
-    """
-    return ToolResult(content=render_workflow("finish"))
-
-
-@mcp.tool()
-def summarize() -> ToolResult:
-    """Prepare handoff for next agent session.
-    
-    Run when ending a session or hitting a complex blocker.
-    Creates a handoff note with current state and next steps.
-    """
-    return ToolResult(content=render_workflow("summarize"))
-
-
-@mcp.tool()
-def refine() -> ToolResult:
-    """Maintain documentation and improve process.
-    
-    Run periodically to sync documentation with code changes
-    and identify process improvements.
-    """
-    return ToolResult(content=render_workflow("refine"))
-
-@mcp.tool()
-def delegate(
-    prompt: str,
-    context_files: list[str] | None = None,
-    high_complexity: bool = False,
-    timeout: int | None = None,
-) -> ToolResult:
-    """Delegate a task to a Gemini subagent.
-    
-    Spawns a new Gemini CLI instance to handle a specific task,
-    reducing token usage by the main agent.
-    
-    Args:
-        prompt: The task description for the subagent.
-        context_files: List of file paths (relative to project root) to read and pass to the subagent.
-        high_complexity: If True, use reasoning-capable model (gemini-3-pro-preview).
-                         Otherwise, use fast model (gemini-3-flash-preview).
-        timeout: Maximum seconds to wait (default: configured timeout).
-    
-    Returns:
-        The subagent's response.
-    """
-    return _delegate_impl(prompt, context_files, high_complexity, timeout)
-
-
-def _delegate_impl(
-    prompt: str,
-    context_files: list[str] | None = None,
-    high_complexity: bool = False,
-    timeout: int | None = None
-) -> ToolResult:
-    """Implementation of delegate tool."""
-    import subprocess
-    
-    config = get_config()
-    
-    # Select model based on complexity flag
-    target_model = "gemini-3-pro-preview" if high_complexity else "gemini-3-flash-preview"
-    # Cast safely - config values might be parsed as strings from YAML
-    timeout_val = int(timeout or config.delegation["timeout"])
-    
-    # Construct the full prompt with context files
-    preamble = (
-        "SYSTEM NOTE: You are a subagent working on a specific task. "
-        "You have only ONE turn to complete this task. "
-        "You are stateless; no memory is retained after this turn. "
-        "You must tie up all loose ends within this single response. "
-        "If the task is too large to complete in a single turn, you must explicitly state this."
-    )
-    
-    full_prompt = f"{preamble}\n\n{prompt}"
-    if context_files:
-        context_content = []
-        for file_path in context_files:
-            try:
-                # Resolve path relative to project root
-                abs_path = (config.project_path / file_path).resolve()
-                
-                # Security check: ensure path is within project
-                if not str(abs_path).startswith(str(config.project_path.resolve())):
-                    context_content.append(f"⚠️ Context file skipped (outside project): {file_path}")
-                    continue
-                    
-                if abs_path.exists():
-                    file_text = abs_path.read_text()
-                    context_content.append(f"# Context File: {file_path}\n{file_text}\n")
-                else:
-                    context_content.append(f"⚠️ Context file not found: {file_path}")
-            except Exception as e:
-                context_content.append(f"⚠️ Error reading {file_path}: {e}")
-        
-        if context_content:
-            full_prompt = f"{preamble}\n\n" + "\n".join(context_content) + "\n\n---\n\n" + prompt
-
+def _run_model(model: str, prompt: str) -> str:
+    """Run Gemini model via CLI and return stdout."""
     try:
-        # Construct the command
-        # gemini -m "model" "prompt"
-        # We use the positional prompt argument which is the preferred way
-        cmd = ["gemini", "-m", str(target_model), full_prompt]
+        # Use a reasonable timeout to prevent hanging forever
+        # gemini CLI arguments: gemini -m <model> <prompt>
+        cmd = ["gemini", "-m", model, prompt]
         
-        # Run execution in the project directory
+        # Increase Node.js memory limit to 8GB to prevent OOM on large diffs
+        import os
+        env = os.environ.copy()
+        env["NODE_OPTIONS"] = "--max-old-space-size=8192"
+        
         result = subprocess.run(
-            cmd,
-            cwd=config.project_path,
-            capture_output=True,
-            text=True,
-            timeout=timeout_val,
+            cmd, 
+            capture_output=True, 
+            text=True, 
+            timeout=300,
+            env=env
         )
-        
         if result.returncode != 0:
-            return ToolResult(content=f"⚠️ Subagent failed (exit code {result.returncode}):\n{result.stderr}")
-            
-        return ToolResult(content=result.stdout.strip())
-        
+            raise RuntimeError(f"Model failed: {result.stderr}")
+        return result.stdout.strip()
     except subprocess.TimeoutExpired:
-        return ToolResult(content=f"⚠️ Subagent timed out after {timeout_val} seconds")
+        raise RuntimeError("Model execution timed out")
     except Exception as e:
-        return ToolResult(content=f"⚠️ Failed to delegate task: {str(e)}")
+        raise RuntimeError(f"Failed to run model: {e}")
 
+def _mark_task_complete(config: ContextEngineConfig, task_id: str) -> None:
+    """Update task status marker in the work plan file to [x]."""
+    tasks_path = config.get_doc_path("tasks")
+    if not tasks_path.exists():
+        return
+    
+    try:
+        content = tasks_path.read_text()
+        # Pattern: find task ID and update preceding marker to [x]
+        pattern = rf"(\[\s*[xX/B ]?\s*\])\s*{re.escape(task_id)}\b"
+        updated_content = re.sub(pattern, f"[x] {task_id}", content)
+        
+        if updated_content != content:
+            tasks_path.write_text(updated_content)
+    except Exception:
+        pass
 
-# =============================================================================
-# Documentation Tool - Progress logging
-# =============================================================================
-
-@mcp.tool()
-def log_progress(
-    task_id: str,
-    status: Literal["started", "implementing", "verified", "blocked", "complete"],
-    summary: str,
-) -> ToolResult:
-    """Log progress checkpoint during task execution.
-    
-    Workflows instruct you to call this at specific checkpoints to ensure
-    documentation happens during work, not after. This appends to the work
-    log and can update task status.
-    
-    Args:
-        task_id: The task identifier (e.g., "3.2.1", "Epic 4.2").
-        status: Current status of the task.
-        summary: Brief description of progress or changes made.
-    
-    Returns:
-        Confirmation message.
-    """
-    config = get_config()
+def _append_log(config: ContextEngineConfig, task_id: str, summary: str) -> None:
+    """Append success entry to WORK_LOG.md."""
     log_path = config.get_doc_path("log")
-    
-    # Format the log entry
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    status_emoji = {
-        "started": "🚀",
-        "implementing": "🔨", 
-        "verified": "✅",
-        "blocked": "🚧",
-        "complete": "✓",
-    }.get(status, "•")
+    entry = f"\n**[{timestamp}]** ✅ `{task_id}` (complete): {summary}\n"
     
-    entry = f"\n**[{timestamp}]** {status_emoji} `{task_id}` ({status}): {summary}\n"
-    
-    # Append to work log
     try:
         if log_path.exists():
             with open(log_path, "a") as f:
                 f.write(entry)
         else:
-            # Create with header if doesn't exist
             with open(log_path, "w") as f:
                 f.write(f"# Work Log\n{entry}")
-        
-        # Optionally update task status in work plan
-        if status in ("started", "complete", "blocked"):
-            _update_task_status(config, task_id, status)
-        
-        return ToolResult(content=f"✓ Progress logged: {task_id} - {status}")
-        
-    except Exception as e:
-        return ToolResult(content=f"⚠️ Failed to log progress: {e}")
+    except Exception:
+        pass
 
+# =============================================================================
+# New Tools
+# =============================================================================
 
-def _update_task_status(config: ContextEngineConfig, task_id: str, status: str) -> None:
-    """Update task status marker in the work plan file.
+@mcp.tool()
+def fetch_context() -> ToolResult:
+    """Rapidly load the project's "Mental Model".
     
-    Finds the task by ID and updates its status marker.
+    Logic: Read and return the combined content of README.md, WORK_PLAN.md, and AGENT.md.
+    Do not return full code files.
     """
-    tasks_path = config.get_doc_path("tasks")
-    if not tasks_path.exists():
-        return
+    return _fetch_context()
+
+def _fetch_context() -> ToolResult:
+    config = get_config()
+    files_to_read = [
+        ("README", config.get_doc_path("readme")),
+        ("WORK PLAN", config.get_doc_path("tasks")),
+        ("RULES", config.get_doc_path("rules")),
+    ]
     
-    # Map status to marker
-    marker_map = {
-        "started": "[/]",
-        "complete": "[x]",
-        "blocked": "[B]",
-    }
-    new_marker = marker_map.get(status)
-    if not new_marker:
-        return
+    content_parts = []
+    for label, path in files_to_read:
+        if path.exists():
+            content_parts.append(f"# {label} ({path.name})\n{path.read_text()}")
+        else:
+            content_parts.append(f"# {label}\n(File not found at {path})")
+            
+    # Add Tool Guide
+    tool_guide = """# Tool Guide
+
+## workflow management
+- **fetch_context**: Call this first. Loads the mental model: README, Work Plan, and Rules.
+- **consult_logs(query)**: Check the work log (`WORK_LOG.md`) to see what has been done previously or detailed context.
+- **update_docs**: Run this after major changes to keep documentation (README, Rules) in sync with the work log.
+
+## processing
+- **draft_implementation_plan(requirement)**: Use this to plan before coding. Returns a template to fill out.
+- **delegate_implementation(instructions, context_files)**: Use this for **tightly scoped, well-defined** coding tasks. Decompose changes into smaller stages and call this multiple times rather than trying to do too much in one call.
+- **attempt_completion(task_id, summary)**: The specific way to FINISH a task. It verifies your work (runs tests), reviews your changes (Critic), and if successful, commits code and updates the log.
+"""
+    content_parts.append(tool_guide)
+            
+    return ToolResult(content="\n\n---\n\n".join(content_parts))
+
+
+
+@mcp.tool()
+def consult_logs(query: str) -> ToolResult:
+    """Filter noise from the work log so the agent doesn't have to read the huge file."""
+    return _consult_logs(query)
+
+def _consult_logs(query: str) -> ToolResult:
+    config = get_config()
+    log_path = config.get_doc_path("log")
+    
+    if not log_path.exists():
+        return ToolResult(content="Work log file not found.")
+        
+    log_content = log_path.read_text()
+    
+    system_prompt = "You are a log analyzer. Answer the user's query based only on the provided work log history."
+    full_prompt = f"{system_prompt}\n\nWork Log:\n{log_content}\n\nQuery: {query}"
     
     try:
-        content = tasks_path.read_text()
+        answer = _run_model("gemini-3-flash-preview", full_prompt)
+        return ToolResult(content=answer)
+    except Exception as e:
+        return ToolResult(content=f"Error consulting logs: {e}")
+
+
+
+@mcp.tool()
+def draft_implementation_plan(requirement: str) -> ToolResult:
+    """Force the agent to "think" before acting.
+    
+    Returns a structured Markdown template for the agent to fill out.
+    """
+    return _draft_implementation_plan(requirement)
+
+def _draft_implementation_plan(requirement: str) -> ToolResult:
+    template = f"""# Implementation Plan - {requirement}
+
+## User Story
+{requirement}
+
+## Proposed Changes (Files)
+- [ ] [MODIFY] path/to/file
+- [ ] [NEW] path/to/new/file
+
+## Verification Plan
+- [ ] Automated tests (command to run)
+- [ ] Manual verification steps
+
+## Unknowns
+- List any questions or risks
+"""
+    return ToolResult(content=template)
+
+
+
+@mcp.tool()
+def delegate_implementation(instructions: str, context_files: list[str]) -> ToolResult:
+    """Perform heavy-lifting coding tasks via a sub-agent."""
+    return _delegate_implementation(instructions, context_files)
+
+def _delegate_implementation(instructions: str, context_files: list[str]) -> ToolResult:
+    config = get_config()
+    
+    context_content = []
+    for file_path in context_files:
+        try:
+            abs_path = (config.project_path / file_path).resolve()
+            # Security check
+            if not str(abs_path).startswith(str(config.project_path.resolve())):
+                context_content.append(f"⚠️ Context file skipped (outside project): {file_path}")
+                continue
+                
+            if abs_path.exists():
+                context_content.append(f"# Context File: {file_path}\n{abs_path.read_text()}\n")
+            else:
+                context_content.append(f"⚠️ Context file not found: {file_path}")
+        except Exception as e:
+            context_content.append(f"⚠️ Error reading {file_path}: {e}")
+
+    full_context = "\n".join(context_content)
+    
+    prompt = f"""You are a senior developer. Implement the requested changes. Output the modified code clearly.
+
+Context:
+{full_context}
+
+Instructions:
+{instructions}
+
+You only have one turn to complete this task.
+If the requirements are not completely clear, you MUST ask for clarification, and NOT MAKE ANY CHANGES.
+ONLY if the requirements are clear and you have all the information you need, you must implement the changes in one turn.
+"""
+    try:
+        result = _run_model("gemini-3-pro-preview", prompt)
+        return ToolResult(content=result)
+    except Exception as e:
+        return ToolResult(content=f"Error delegating implementation: {e}")
+
+
+
+@mcp.tool()
+def attempt_completion(task_id: str, summary: str) -> ToolResult:
+    """The "Gatekeeper" tool. Merges review, verification, and finishing."""
+    return _attempt_completion(task_id, summary)
+
+def _attempt_completion(task_id: str, summary: str) -> ToolResult:
+    config = get_config()
+    
+    # 1. Verification
+    verify_cmd = config.get_command("test")
+    print(f"Running verification: {verify_cmd}")
+    
+    verification = subprocess.run(
+        verify_cmd, 
+        shell=True,
+        cwd=config.project_path, 
+        capture_output=True, 
+        text=True
+    )
+    
+    if verification.returncode != 0:
+        return ToolResult(content=f"❌ Verification Failed:\n{verification.stdout}\n{verification.stderr}")
+
+    # 2. Critic Review
+    # Get changes
+    # Exclude lockfiles and binary assets to prevent OOM and token waste
+    exclusions = [
+        ":(exclude)package-lock.json",
+        ":(exclude)yarn.lock",
+        ":(exclude)pnpm-lock.yaml",
+        ":(exclude)Cargo.lock",
+        ":(exclude)*.svg",
+        ":(exclude)*.png",
+        ":(exclude)*.jpg"
+    ]
+    
+    cmd = ["git", "diff", "HEAD"] + exclusions
+    
+    diff_proc = subprocess.run(
+        cmd, 
+        cwd=config.project_path, 
+        capture_output=True, 
+        text=True
+    )
+    changes = diff_proc.stdout
+    if not changes:
+         # Maybe staged changes?
+        cmd_cached = ["git", "diff", "--cached"] + exclusions
+        diff_proc_cached = subprocess.run(
+            cmd_cached, 
+            cwd=config.project_path, 
+            capture_output=True, 
+            text=True
+        )
+        changes = diff_proc_cached.stdout
+
+    if not changes:
+        return ToolResult(content="❌ No changes detected to review.")
+
+    critic_prompt = f"""You are a Ruthless Code Reviewer. Review these changes for bugs, security issues, and alignment with the summary. 
+Respond with 'APPROVE' or 'REJECT' followed by your reasoning.
+
+Task Summary: {summary}
+Changes:
+{changes}
+"""
+
+    try:
+        critic_response = _run_model("gemini-3-pro-preview", critic_prompt)
+    except Exception as e:
+        return ToolResult(content=f"Error running Critic: {e}")
+
+    if "APPROVE" not in critic_response.upper():
+        return ToolResult(content=f"❌ Critic Rejected (or did not approve):\n{critic_response}")
+
+    # 3. Finalize
+    try:
+        subprocess.run(["git", "add", "."], cwd=config.project_path, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", f"feat: {task_id} {summary}"], 
+            cwd=config.project_path, 
+            check=True
+        )
         
-        # Pattern: find task ID and update preceding marker
-        # Matches: | [x] 1.2.3 | or | [ ] 1.2.3 | or - [ ] 1.2.3
-        # We look for the task_id and update the marker before it
-        pattern = rf"(\[\s*[xX/B ]?\s*\])\s*{re.escape(task_id)}\b"
+        _mark_task_complete(config, task_id)
+        _append_log(config, task_id, summary)
         
-        updated_content = re.sub(pattern, f"{new_marker} {task_id}", content)
+        return ToolResult(content=f"✅ Task {task_id} Completed, Verified, and Committed.")
         
-        if updated_content != content:
-            tasks_path.write_text(updated_content)
+    except subprocess.CalledProcessError as e:
+        return ToolResult(content=f"❌ Failed to commit: {e}")
+
+
+
+@mcp.tool()
+def update_docs() -> ToolResult:
+    """Review work log and update documentation files with relevant information.
+    
+    Uses a subagent to scan documentation against the work log and apply updates.
+    """
+    return _update_docs()
+
+def _update_docs() -> ToolResult:
+    config = get_config()
+    log_path = config.get_doc_path("log")
+    
+    if not log_path.exists():
+        return ToolResult(content="Work log file not found.")
+        
+    log_content = log_path.read_text()
+    updated_files = []
+    
+    # Iterate over all configured docs, skipping the log itself and tasks
+    # We want to update things like README, rules, index, etc.
+    skip_keys = {"log", "tasks"}
+    
+    for doc_key, rel_path in config.docs.items():
+        if doc_key in skip_keys:
+            continue
             
-    except Exception:
-        # Silently fail - logging is best effort
-        pass
+        doc_path = config.project_path / rel_path
+        if not doc_path.exists():
+            continue
+            
+        current_content = doc_path.read_text()
+        
+        prompt = f"""You are a Documentation Maintainer. Your goal is to keep the documentation up-to-date with the work log.
+        
+Think very carefully about whether the information in the work log is relevant to this specific documentation file.
+If the information is just implementation details that don't belong in high-level docs, ignore it.
+If the information contradicts current docs or adds new features that should be documented, update it.
+
+Work Log:
+{log_content}
+
+Current File ({doc_key} - {rel_path}):
+{current_content}
+
+Instructions:
+1. Analyze if changes are needed.
+2. If NO changes are needed, output exactly: NO_CHANGES
+3. If changes ARE needed, output the FULL new content of the file. Do not use diffs. Output only the content.
+"""
+        try:
+            # We use flash for speed/cost, or pro for quality? Plan said pro.
+            # "Uses a subagent (gemini-3-pro-preview)..."
+            new_content = _run_model("gemini-3-pro-preview", prompt)
+            
+            if "NO_CHANGES" in new_content:
+                continue
+                
+            # Sanity check: if it returned empty string or something weird
+            if not new_content.strip():
+                continue
+                
+            if new_content != current_content:
+                doc_path.write_text(new_content)
+                updated_files.append(f"{rel_path}")
+                
+        except Exception as e:
+            print(f"Failed to update {rel_path}: {e}")
+            
+    if not updated_files:
+        return ToolResult(content="Documentation review complete. No updates needed.")
+        
+    return ToolResult(content=f"✅ Updated documentation files: {', '.join(updated_files)}")
 
 
 # =============================================================================
